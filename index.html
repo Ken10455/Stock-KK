@@ -404,6 +404,12 @@ async function proxyJSON(url){
 function directJSON(url){ return fetch(url).then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}); }
 const numF=v=>{const n=parseFloat(String(v).replace(/,/g,''));return isNaN(n)?null:n;};
 
+// 先試直連，被 CORS 擋住就改走代理（與即時報價同一套代理）
+async function jsonDirectOrProxy(url){
+  try{ return await directJSON(url); }
+  catch(e){ return await proxyJSON(url); }
+}
+
 // === 台股 openapi 全市場估值表（一次抓、全檔共用、當天快取）===
 let twCache={pe:null, div:null, day:{}, ts:0};
 async function loadTWReference(){
@@ -411,8 +417,8 @@ async function loadTWReference(){
   if(twCache.ts && Date.now()-twCache.ts<30*60*1000 && twCache.pe) return;
   try{
     const [bw, div] = await Promise.all([
-      directJSON("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"),
-      directJSON("https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL").catch(()=>[])
+      jsonDirectOrProxy("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"),
+      jsonDirectOrProxy("https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL").catch(()=>[])
     ]);
     const pe={};
     (bw||[]).forEach(r=>{ pe[r.Code]={pe:numF(r.PEratio), yield:numF(r.DividendYield), pb:numF(r.PBratio)}; });
@@ -448,7 +454,7 @@ let twDayAll=null, twDayTs=0;
 async function twClose(code){
   try{
     if(!twDayAll || Date.now()-twDayTs>30*60*1000){
-      twDayAll=await directJSON("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL");
+      twDayAll=await jsonDirectOrProxy("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL");
       twDayTs=Date.now();
     }
     const row=(twDayAll||[]).find(r=>r.Code===code);
@@ -574,7 +580,7 @@ function render(){
     const chgPct=chg!=null&&q.prevClose?chg/q.prevClose*100:null;
     const weight=value!=null&&totalValue>0?value/totalValue*100:null;
     const loading=h.loading?'<span class="spin"></span>':'';
-    const err=q.error?'<span class="stale">讀取失敗</span>':'';
+    const err=q.error?`<span class="stale">${q.msg||'讀取失敗'}</span>`:'';
     const staleTag=q.stale?'<span class="stale-tag">收盤</span>':'';
     const multi=h.lots.length>1;
     const caret=`<span class="caret ${h.expanded?'open':''}" data-exp="${h.id}">${multi?'▸':''}</span>`;
