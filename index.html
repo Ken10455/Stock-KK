@@ -47,6 +47,10 @@
   .market-seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
   .market-seg button{flex:1;border:none;background:#fff;padding:9px 0;font-size:13px;cursor:pointer;color:var(--ink-soft);font-family:inherit}
   .market-seg button.on{background:var(--accent);color:#fff;font-weight:600}
+  .action-seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:14px}
+  .action-seg button{border:none;background:#fff;padding:8px 22px;font-size:13.5px;cursor:pointer;color:var(--ink-soft);font-family:inherit;font-weight:600}
+  .action-seg button[data-act="BUY"].on{background:var(--up);color:#fff}
+  .action-seg button[data-act="SELL"].on{background:var(--down);color:#fff}
   .btn{border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;
     background:var(--accent);color:#fff;font-family:inherit;white-space:nowrap}
   .btn:hover{background:#13294d}
@@ -59,7 +63,8 @@
   .ac .code{font-family:var(--mono);color:var(--accent);font-weight:600}
   .ac .nm{color:var(--ink-soft);text-align:right;flex:1}
   .hint{font-size:11px;color:var(--ink-soft);margin-top:10px}
-  .key-row{display:flex;gap:10px;align-items:end;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+  .key-row{display:flex;gap:10px;align-items:end}
+  .key-panel h2{margin-bottom:14px}
   .stale-tag{font-size:9px;font-family:-apple-system,sans-serif;background:#fff7e6;color:var(--gold);
     padding:1px 5px;border-radius:4px;margin-left:6px;vertical-align:middle}
 
@@ -103,6 +108,9 @@
   .lot-when{font-family:var(--mono);font-size:11.5px;padding-left:34px!important}
   .lot-sub{color:var(--flat);text-align:left!important}
   .lot-del{cursor:pointer;color:var(--flat);font-size:11px;font-family:-apple-system,sans-serif}
+  .lot-buy,.lot-sell{font-size:9.5px;font-family:-apple-system,sans-serif;padding:1px 5px;border-radius:4px;margin-right:6px}
+  .lot-buy{background:#fdecec;color:var(--up)}
+  .lot-sell{background:#e7f5ee;color:var(--down)}
   .lot-del:hover{color:var(--up);text-decoration:underline}
   .empty{padding:46px 20px;text-align:center;color:var(--ink-soft);font-size:14px}
   .stale{color:var(--ink-soft);font-size:10px}
@@ -116,7 +124,7 @@
     .summary{grid-template-columns:repeat(2,1fr)}
     .form-row{grid-template-columns:1fr 1fr}
     .scroll{overflow-x:auto}
-    table{min-width:1000px}
+    table{min-width:840px}
   }
 </style>
 </head>
@@ -132,13 +140,17 @@
 
   <div class="summary">
     <div class="scell"><div class="lab">總成本</div><div class="val" id="sCost">—</div></div>
-    <div class="scell"><div class="lab">市值</div><div class="val" id="sValue">—</div></div>
+    <div class="scell"><div class="lab">總市值</div><div class="val" id="sValue">—</div></div>
     <div class="scell"><div class="lab">總損益</div><div class="val" id="sPL">—</div><div class="sub" id="sPLpct">—</div></div>
     <div class="scell"><div class="lab">持股檔數</div><div class="val" id="sCount">0</div><div class="sub">台股 + 美股</div></div>
   </div>
 
   <div class="panel">
-    <h2>新增持股</h2>
+    <h2>新增交易</h2>
+    <div class="action-seg">
+      <button type="button" data-act="BUY" class="on">買進</button>
+      <button type="button" data-act="SELL">賣出</button>
+    </div>
     <div class="form-row">
       <div class="field">
         <label>股票代號 / 名稱</label>
@@ -153,18 +165,11 @@
         </div>
       </div>
       <div class="field"><label>股數</label><input id="fQty" class="mono" type="number" min="0" step="1" placeholder="0"></div>
-      <div class="field"><label>每股成本</label><input id="fCost" class="mono" type="number" min="0" step="0.01" placeholder="0.00"></div>
-      <button class="btn" id="addBtn">加入</button>
+      <div class="field"><label id="costLab">每股成本</label><input id="fCost" class="mono" type="number" min="0" step="0.01" placeholder="0.00"></div>
+      <button class="btn" id="addBtn">買進</button>
     </div>
-    <div class="hint">代號自動帶名稱、名稱自動帶代號（台股內建常見清單；美股以代號為主）。即時價格由瀏覽器抓取最新行情。</div>
+    <div class="hint" id="formHint">代號自動帶名稱、名稱自動帶代號（台股內建常見清單；美股以代號為主）。即時價格由瀏覽器抓取最新行情。</div>
     <div class="err" id="formErr"></div>
-    <div class="key-row">
-      <div class="field" style="flex:1">
-        <label>Finnhub API 金鑰（美股即時報價用，於 finnhub.io 免費註冊）</label>
-        <input id="fhKey" class="mono" placeholder="貼上金鑰，例如 cXXXXXXXXXXXXXXXXXXXX" autocomplete="off">
-      </div>
-      <button class="btn ghost" id="saveKeyBtn">儲存金鑰</button>
-    </div>
   </div>
 
   <div class="tbl-wrap">
@@ -184,7 +189,8 @@
         <tr>
           <th class="l">股票</th>
           <th>股數</th>
-          <th>成本價</th>
+          <th>成交均價</th>
+          <th>總成本</th>
           <th>現價</th>
           <th>漲跌</th>
           <th>市值</th>
@@ -193,10 +199,6 @@
           <th>佔比</th>
           <th>本益比</th>
           <th>EPS</th>
-          <th>ROE</th>
-          <th>P/B</th>
-          <th>殖利率</th>
-          <th>除息日</th>
           <th></th>
         </tr>
       </thead>
@@ -204,12 +206,14 @@
       <tfoot id="foot" style="display:none">
         <tr>
           <td class="l">合計</td>
-          <td></td><td></td><td></td><td></td>
+          <td></td><td></td>
+          <td id="fCostTot"></td>
+          <td></td><td></td>
           <td id="fValue"></td>
           <td id="fPL"></td>
           <td id="fPLpct"></td>
           <td>100%</td>
-          <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+          <td></td><td></td><td></td>
         </tr>
       </tfoot>
     </table>
@@ -217,10 +221,21 @@
     <div class="empty" id="emptyMsg">尚無持股，從上方加入第一檔。</div>
   </div>
 
+  <div class="panel key-panel">
+    <h2>設定</h2>
+    <div class="key-row">
+      <div class="field" style="flex:1">
+        <label>Finnhub API 金鑰（美股即時報價用，於 finnhub.io 免費註冊）</label>
+        <input id="fhKey" class="mono" placeholder="貼上金鑰，例如 cXXXXXXXXXXXXXXXXXXXX" autocomplete="off">
+      </div>
+      <button class="btn ghost" id="saveKeyBtn">儲存金鑰</button>
+    </div>
+  </div>
+
   <div class="note">
-    台股：即時價來自證交所即時報價（盤中約 5 秒更新，經 CORS 代理）；代理失敗時自動退回前一交易日收盤價並標示「收盤」。本益比、P/B、殖利率、除息日來自證交所 OpenAPI，EPS 以現價÷本益比估算；台股 ROE 無免費資料來源，顯示「—」。<br>
-    美股：即時價與本益比、EPS、ROE、P/B 來自 Finnhub（需填入免費金鑰）。<br>
-    持股與金鑰永久儲存，重新整理或關閉瀏覽器後仍保留。重複加入同一檔會自動整合並計算加權平均成本，點開可看各筆明細。可用「匯出備份」存成檔案，在另一台裝置「匯入備份」還原，達成跨裝置同步。資料僅供參考、非投資建議。
+    台股：即時價來自證交所即時報價（盤中約 5 秒更新，經 CORS 代理）；代理失敗時自動退回前一交易日收盤價並標示「收盤」。本益比來自證交所 OpenAPI，EPS 以現價÷本益比估算。<br>
+    美股：即時價與本益比、EPS 來自 Finnhub（需填入免費金鑰）。<br>
+    持股與金鑰永久儲存，重新整理或關閉瀏覽器後仍保留。買進會整合並計算加權平均成本；賣出以加權平均成本結轉、扣除股數，賣到 0 股整檔移除，點開可看買賣各筆明細與已實現損益。可用「匯出備份」存成檔案，在另一台裝置「匯入備份」還原，達成跨裝置同步。資料僅供參考、非投資建議。
   </div>
 </div>
 
@@ -248,7 +263,8 @@ const TW_BY_CODE = Object.fromEntries(TW_LIST.map(x=>[x[0],x[1]]));
 const TW_BY_NAME = Object.fromEntries(TW_LIST.map(x=>[x[1],x[0]]));
 
 let market = "TW";
-let holdings = []; // {id,market,code,name,qty,cost, quote:{...}}
+let action = "BUY";
+let holdings = []; // {id,market,code,name,lots:[{lotId,qty,cost,at,sell?,sellPrice?}], quote}
 
 // ---------- 市場切換 ----------
 document.querySelectorAll('.market-seg button').forEach(b=>{
@@ -257,6 +273,20 @@ document.querySelectorAll('.market-seg button').forEach(b=>{
     b.classList.add('on'); market=b.dataset.mkt;
     document.getElementById('fSym').placeholder = market==="TW"
       ? "輸入代號或名稱，如 2330 或 台積電" : "輸入美股代號，如 AAPL";
+  };
+});
+
+// ---------- 買進 / 賣出 切換 ----------
+document.querySelectorAll('.action-seg button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.action-seg button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); action=b.dataset.act;
+    const isBuy=action==="BUY";
+    document.getElementById('addBtn').textContent=isBuy?"買進":"賣出";
+    document.getElementById('costLab').textContent=isBuy?"每股成本":"每股賣出價";
+    document.getElementById('formHint').textContent=isBuy
+      ? "代號自動帶名稱、名稱自動帶代號（台股內建常見清單；美股以代號為主）。即時價格由瀏覽器抓取最新行情。"
+      : "賣出會以加權平均成本結轉、扣除持股股數；賣到 0 股時整檔移除。";
   };
 });
 
@@ -298,16 +328,16 @@ function resolveTW(input){
   return null;
 }
 
-// ---------- 加入持股 ----------
-document.getElementById('addBtn').onclick=addHolding;
-function addHolding(){
+// ---------- 交易（買進 / 賣出）----------
+document.getElementById('addBtn').onclick=submitTrade;
+function submitTrade(){
   const err=document.getElementById('formErr'); err.style.display='none';
   const raw=fSym.value.trim();
   const qty=parseFloat(document.getElementById('fQty').value);
-  const cost=parseFloat(document.getElementById('fCost').value);
+  const price=parseFloat(document.getElementById('fCost').value);
   if(!raw) return showErr("請輸入股票代號或名稱");
   if(!(qty>0)) return showErr("請輸入有效股數");
-  if(!(cost>=0)) return showErr("請輸入有效成本");
+  if(!(price>=0)) return showErr(action==="BUY"?"請輸入有效成本":"請輸入有效賣出價");
   let code,name;
   if(market==="TW"){
     const r=resolveTW(raw); if(!r) return showErr("找不到此台股，請確認代號");
@@ -316,9 +346,22 @@ function addHolding(){
     code=raw.toUpperCase().replace(/[^A-Z.]/g,''); name=code;
     if(!code) return showErr("請輸入有效美股代號");
   }
-  // 同市場同代號 → 整合為一檔，加入一筆持股明細(lot)
-  const lot={lotId:Date.now()+Math.random(), qty, cost, at:new Date().toISOString()};
   let h=holdings.find(x=>x.market===market && x.code===code);
+
+  if(action==="SELL"){
+    if(!h) return showErr("尚未持有這檔股票，無法賣出");
+    const held=aggQty(h);
+    if(qty>held+1e-9) return showErr(`賣出股數超過持有股數（目前持有 ${held.toLocaleString()} 股）`);
+    h.lots.push({lotId:Date.now()+Math.random(), qty:-qty, cost:aggCost(h), sell:true, sellPrice:price, at:new Date().toISOString()});
+    // 全部賣光 → 整檔移除
+    if(aggQty(h)<=1e-9) holdings=holdings.filter(x=>x.id!==h.id);
+    fSym.value='';document.getElementById('fQty').value='';document.getElementById('fCost').value='';
+    save(); render();
+    return;
+  }
+
+  // 買進
+  const lot={lotId:Date.now()+Math.random(), qty, cost:price, at:new Date().toISOString()};
   if(h){
     h.lots.push(lot);
     if(h.name===h.code && name!==code) h.name=name;
@@ -330,9 +373,13 @@ function addHolding(){
   save(); render();
   if(!h.quote) fetchOne(h);
 }
-// 由 lots 計算總股數與加權平均成本
+// 由 lots 計算：總股數 = 買進 - 賣出；加權平均成本只計買進 lot
 function aggQty(h){return h.lots.reduce((s,l)=>s+l.qty,0);}
-function aggCost(h){const q=aggQty(h);return q>0?h.lots.reduce((s,l)=>s+l.qty*l.cost,0)/q:0;}
+function aggCost(h){
+  const buys=h.lots.filter(l=>!l.sell && l.qty>0);
+  const q=buys.reduce((s,l)=>s+l.qty,0);
+  return q>0 ? buys.reduce((s,l)=>s+l.qty*l.cost,0)/q : 0;
+}
 function showErr(m){const e=document.getElementById('formErr');e.textContent=m;e.style.display='block';}
 
 // ---------- 抓取行情 ----------
@@ -540,6 +587,7 @@ function render(){
       </div></td>
       <td>${qty.toLocaleString()}</td>
       <td>${pnum(avg)}</td>
+      <td>${money(costTot,cur)}</td>
       <td>${loading||(price!=null?pnum(price)+staleTag:'—')}</td>
       <td class="${cls(chg)}">${chg!=null?pnum(chg)+' ('+pct(chgPct)+')':'—'}</td>
       <td>${money(value,cur)}</td>
@@ -548,32 +596,45 @@ function render(){
       <td>${weight!=null?`<span class="weight-bar" style="width:${Math.max(2,weight*0.5)}px"></span>${weight.toFixed(1)}%`:'—'}</td>
       <td>${pnum(q.pe,1)}</td>
       <td>${pnum(q.eps)}</td>
-      <td>${q.roe!=null?(q.roe*100).toFixed(1)+'%':'—'}</td>
-      <td>${pnum(q.pb)}</td>
-      <td>${q.yield!=null?q.yield.toFixed(2)+'%':'—'}</td>
-      <td>${fmtDate(q.exDiv)}</td>
       <td><span class="del" data-id="${h.id}">✕</span></td>
     </tr>`;
 
     let detail='';
     if(h.expanded){
       const lotRows=h.lots.map((l,i)=>{
+        const isSell=l.sell||l.qty<0;
+        const aq=Math.abs(l.qty);
+        if(isSell){
+          // 賣出：實現損益 =(賣價 - 當時平均成本)×股數
+          const realized=(l.sellPrice-l.cost)*aq;
+          return `<tr class="lot-row">
+            <td class="l lot-when"><span class="lot-sell">賣出</span> ${l.at?l.at.slice(0,10):'—'}</td>
+            <td>-${aq.toLocaleString()}</td>
+            <td>${pnum(l.sellPrice)}</td>
+            <td colspan="2" class="lot-sub">結轉成本 ${pnum(l.cost)}</td>
+            <td>${money(l.sellPrice*aq,cur)}</td>
+            <td class="${cls(realized)}">${money(realized,cur)}</td>
+            <td class="${cls(realized)}">已實現</td>
+            <td colspan="3"></td>
+            <td><span class="lot-del" data-id="${h.id}" data-lot="${l.lotId}">移除</span></td>
+          </tr>`;
+        }
         const lv=price!=null?price*l.qty:null;
         const lpl=lv!=null?lv-l.cost*l.qty:null;
         const lplPct=lv!=null&&l.cost>0?(lpl/(l.cost*l.qty)*100):null;
         return `<tr class="lot-row">
-          <td class="l lot-when">第 ${i+1} 筆 · ${l.at?l.at.slice(0,10):'—'}</td>
+          <td class="l lot-when"><span class="lot-buy">買進</span> ${l.at?l.at.slice(0,10):'—'}</td>
           <td>${l.qty.toLocaleString()}</td>
           <td>${pnum(l.cost)}</td>
           <td colspan="2" class="lot-sub">成本 ${money(l.cost*l.qty,cur)}</td>
           <td>${money(lv,cur)}</td>
           <td class="${cls(lpl)}">${lpl!=null?money(lpl,cur):'—'}</td>
           <td class="${cls(lpl)}">${pct(lplPct)}</td>
-          <td colspan="6"></td>
+          <td colspan="3"></td>
           <td><span class="lot-del" data-id="${h.id}" data-lot="${l.lotId}">移除</span></td>
         </tr>`;
       }).join('');
-      detail=`<tr class="lot-block"><td colspan="16" class="lot-cell"><table class="lot-table">${lotRows}</table></td></tr>`;
+      detail=`<tr class="lot-block"><td colspan="13" class="lot-cell"><table class="lot-table">${lotRows}</table></td></tr>`;
     }
     return main+detail;
   }).join('');
@@ -594,6 +655,7 @@ function render(){
   const totalPL=totalValue-totalCost;
   const totalPLpct=totalCost>0?totalPL/totalCost*100:0;
   foot.style.display='';
+  document.getElementById('fCostTot').textContent=fmtMixed(totalCost);
   document.getElementById('fValue').textContent=fmtMixed(totalValue);
   const fpl=document.getElementById('fPL'); fpl.textContent=(totalPL>=0?'+':'')+fmtMixed(Math.abs(totalPL));
   fpl.className=cls(totalPL);
@@ -656,7 +718,7 @@ async function load(){
       const data=JSON.parse(r);
       holdings=data.map(d=>({
         id:Date.now()+Math.random(), market:d.market, code:d.code, name:d.name,
-        lots:(d.lots||[]).map(l=>({lotId:Date.now()+Math.random(),qty:l.qty,cost:l.cost,at:l.at})),
+        lots:(d.lots||[]).map(l=>({lotId:Date.now()+Math.random(),qty:l.qty,cost:l.cost,at:l.at,sell:l.sell||l.qty<0,sellPrice:l.sellPrice})),
         quote:null, expanded:false
       }));
     }catch(e){ /* 資料毀損則略過 */ }
@@ -702,7 +764,7 @@ document.getElementById('importFile').onchange=(e)=>{
         if(!d.market||!d.code||!Array.isArray(d.lots)) throw new Error('資料缺漏');
         return {
           id:Date.now()+Math.random(), market:d.market, code:d.code, name:d.name||d.code,
-          lots:d.lots.map(l=>({lotId:Date.now()+Math.random(),qty:+l.qty,cost:+l.cost,at:l.at||new Date().toISOString()})),
+          lots:d.lots.map(l=>({lotId:Date.now()+Math.random(),qty:+l.qty,cost:+l.cost,at:l.at||new Date().toISOString(),sell:l.sell||(+l.qty<0),sellPrice:l.sellPrice!=null?+l.sellPrice:undefined})),
           quote:null, expanded:false
         };
       });
@@ -734,7 +796,7 @@ document.getElementById('importFile').onchange=(e)=>{
 };
 
 // Enter 快速加入
-['fQty','fCost'].forEach(id=>document.getElementById(id).addEventListener('keydown',e=>{if(e.key==='Enter')addHolding();}));
+['fQty','fCost'].forEach(id=>document.getElementById(id).addEventListener('keydown',e=>{if(e.key==='Enter')submitTrade();}));
 
 load();
 </script>
