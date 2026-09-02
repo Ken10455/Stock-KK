@@ -211,7 +211,7 @@
     swap: localStorage.getItem(LS+"swap") === "1",
     geo: false, here: null,
     statics: null, staticsKey: "",
-    token: null, tokenExp: 0, timer: null, busy: false
+    token: null, tokenExp: 0, timer: null, busy: false, pauseUntil: 0, lastLoad: 0
   };
 
   /* ───────── 訊息 ───────── */
@@ -377,9 +377,14 @@
   }
 
   /* ───────── 讀取 ───────── */
-  function load(){
+  function load(force){
     if(S.busy) return Promise.resolve();
-    S.busy = true; setStat("讀取中…"); say("");
+    if(!force && Date.now() < S.pauseUntil){
+      var left = Math.ceil((S.pauseUntil - Date.now())/1000);
+      setStat("暫停中，" + left + " 秒後恢復","stale");
+      return Promise.resolve();
+    }
+    S.busy = true; S.lastLoad = Date.now(); setStat("讀取中…"); say("");
     return loadStatics()
       .then(function(){ return apiTry(livePaths()); })
       .then(function(j){ render(unwrap(j)); })
@@ -407,7 +412,10 @@
     }else if(m === "BADKEY"){
       say("金鑰被拒絕。到設定確認 Client ID 與 Secret 沒有貼錯或多了空白。");
     }else if(m === "RATE"){
-      say("今天的 API 額度用完了，明天重置。");
+      S.pauseUntil = Date.now() + 300000;
+      setStat("已暫停自動更新 5 分鐘","stale");
+      say("TDX 回覆請求過多（429）。可能是短時間內送太多次，也可能是當日額度用完。<br>" +
+          "自動更新已暫停 5 分鐘，稍後按<b>重新讀取</b>試一次；若還是被擋，就是當日額度，明天會重置。");
     }else if(S.mode === "hwy"){
       say("省道／快速道路的端點沒試中。下面是每個候選路徑的回應，把整段貼給我就能定出正確寫法：<br><code>" + m + "</code>");
     }else if(m.indexOf("HTTP 400") >= 0 || m.indexOf("HTTP 404") >= 0 || m === "NOPATH"){
@@ -707,7 +715,7 @@
     localStorage.setItem(LS+"road", S.road);
     load();
   };
-  $("btnRefresh").onclick = load;
+  $("btnRefresh").onclick = function(){ S.pauseUntil = 0; load(true); };
 
   $("btnCfg").onclick = function(){
     $("cid").value = localStorage.getItem(LS+"cid") || "";
@@ -727,7 +735,10 @@
   };
 
   document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState === "visible") load();
+    if(document.visibilityState !== "visible") return;
+    var gap = S.mode === "fwy" ? 30000 : 120000;
+    if(Date.now() - S.lastLoad < gap) return;
+    load();
   });
 
   /* ───────── 啟動 ───────── */
@@ -736,7 +747,13 @@
   $("tabCity").setAttribute("aria-pressed", S.mode === "city");
   buildScopeSelect();
   buildDirChips([]);
-  setInterval(function(){ if(document.visibilityState === "visible") load(); }, 60000);
+  // 國道每分鐘更新一次；公路局與縣市是五分鐘一次的統計值，抓太密只是浪費額度
+  setInterval(function(){
+    if(document.visibilityState !== "visible") return;
+    var gap = S.mode === "fwy" ? 60000 : 180000;
+    if(Date.now() - S.lastLoad < gap - 2000) return;
+    load();
+  }, 30000);
   load();
 
 })();
