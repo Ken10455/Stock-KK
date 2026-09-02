@@ -128,6 +128,7 @@
 
   <div class="seg" role="group" aria-label="道路類型">
     <button id="tabFwy" aria-pressed="true">國道</button>
+    <button id="tabHwy" aria-pressed="false">省道快速</button>
     <button id="tabCity" aria-pressed="false">一般道路</button>
   </div>
 
@@ -192,13 +193,14 @@
     ["N3A","國道3甲"],["N4","國道4號"],["N5","國道5號"],["N6","國道6號"],
     ["N8","國道8號"],["N10","國道10號"]
   ];
+  // TDX 市區 VD 只接受這 16 個縣市（新北、苗栗、彰化、宜蘭、澎湖、連江未開放）
   var CITIES = [
-    ["Taipei","臺北市"],["NewTaipei","新北市"],["Keelung","基隆市"],["Taoyuan","桃園市"],
-    ["Hsinchu","新竹市"],["HsinchuCounty","新竹縣"],["MiaoliCounty","苗栗縣"],
-    ["Taichung","臺中市"],["ChanghuaCounty","彰化縣"],["NantouCounty","南投縣"],
-    ["YunlinCounty","雲林縣"],["ChiayiCounty","嘉義縣"],["Chiayi","嘉義市"],
+    ["Keelung","基隆市"],["Taipei","臺北市"],["Taoyuan","桃園市"],
+    ["Hsinchu","新竹市"],["HsinchuCounty","新竹縣"],
+    ["Taichung","臺中市"],["NantouCounty","南投縣"],["YunlinCounty","雲林縣"],
+    ["Chiayi","嘉義市"],["ChiayiCounty","嘉義縣"],
     ["Tainan","臺南市"],["Kaohsiung","高雄市"],["PingtungCounty","屏東縣"],
-    ["YilanCounty","宜蘭縣"],["HualienCounty","花蓮縣"],["TaitungCounty","臺東縣"]
+    ["HualienCounty","花蓮縣"],["TaitungCounty","臺東縣"],["KinmenCounty","金門縣"]
   ];
 
   var S = {
@@ -239,20 +241,27 @@
       });
   }
 
-  // 依序嘗試多個候選路徑，回傳第一個成功的
+  // 依序嘗試多個候選路徑，回傳第一個成功的；全失敗時把每一次的回應都帶出來
   function apiTry(paths){
-    var i = 0, lastErr = null;
+    var i = 0, errs = [];
     function next(){
-      if(i >= paths.length) return Promise.reject(lastErr || new Error("NOPATH"));
+      if(i >= paths.length){
+        return Promise.reject(new Error(errs.length ? errs.join(" ／ ") : "NOPATH"));
+      }
       var p = paths[i++];
       return getToken().then(function(tk){
         return fetch(API + p, {headers:{authorization:"Bearer " + tk, accept:"application/json"}});
       }).then(function(r){
-        if(r.status === 404 || r.status === 400){ lastErr = new Error("API " + r.status); return next(); }
+        if(r.ok){ S.usedPath = p.split("?")[0]; return r.json(); }
         if(r.status === 401){ S.token = null; throw new Error("BADKEY"); }
         if(r.status === 429) throw new Error("RATE");
-        if(!r.ok) throw new Error("API " + r.status);
-        return r.json();
+        // 把伺服器講的話帶出來，不要只留狀態碼
+        return r.text().then(function(t){
+          var detail = (t || "").replace(/\s+/g," ").slice(0,200);
+          var msg = "HTTP " + r.status + " @ " + p.split("?")[0] + (detail ? " — " + detail : "");
+          if(r.status === 404 || r.status === 400){ errs.push(msg); return next(); }
+          throw new Error(msg);
+        });
       });
     }
     return next();
@@ -280,16 +289,34 @@
             NE:"東北向",NW:"西北向",SE:"東南向",SW:"西南向",
             "0":"順向","1":"逆向"}[String(d)] || String(d);
   }
+  // 沒有里程時，用偵測器編號的辨識段當位置標籤
+  function shortID(id){
+    if(!id) return "";
+    var parts = String(id).split("-").filter(function(x){ return x && !/^(VD|nfbVD|thbVD)$/i.test(x); });
+    if(!parts.length) return String(id).slice(-10);
+    return parts.slice(-3).join("-").slice(-16);
+  }
   function dist(a,b,c,d){ // 粗略公里
     var x = (a-c)*111, y = (b-d)*101;
     return Math.sqrt(x*x + y*y);
   }
 
   /* ───────── 靜態偵測器 ───────── */
+  // 公路局(省道／快速道路)的端點還沒確認，依序試這些候選；全錯時 TDX 會回覆它接受的寫法
+  var HWY_TRY = ["Highway","ProvincialHighway","Expressway","Road","Country","Freeway/Highway"];
+
   function staticPaths(){
     if(S.mode === "fwy"){
       var f = "%24filter=contains(VDID%2C'" + S.scope + "-')&%24format=JSON";
       return ["/VD/Freeway?" + f, "/VD/Freeway/All?" + f];
+    }
+    if(S.mode === "hwy"){
+      var out = [];
+      HWY_TRY.forEach(function(n){
+        out.push("/VD/" + n + "?%24format=JSON");
+        out.push("/VD/" + n + "/All?%24format=JSON");
+      });
+      return out;
     }
     return ["/VD/City/" + S.scope + "?%24format=JSON"];
   }
@@ -298,7 +325,21 @@
       var f = "%24filter=contains(VDID%2C'" + S.scope + "-')&%24format=JSON";
       return ["/Live/VD/Freeway?" + f, "/Live/VD/Freeway/All?" + f];
     }
+    if(S.mode === "hwy"){
+      var out = [];
+      HWY_TRY.forEach(function(n){
+        out.push("/Live/VD/" + n + "?%24format=JSON");
+        out.push("/Live/VD/" + n + "/All?%24format=JSON");
+      });
+      return out;
+    }
     return ["/Live/VD/City/" + S.scope + "?%24format=JSON"];
+  }
+
+  function dropRoad(meta){
+    // 公路局的資料含少量掛在國道匝道／連絡道上的偵測器，省道分頁不顯示
+    if(S.mode !== "hwy" || !meta) return false;
+    return meta.cls === "0" || /^國道/.test(meta.road || "");
   }
 
   function loadStatics(){
@@ -325,6 +366,7 @@
         var sec = v.RoadSection ? ((v.RoadSection.Start||"") + (v.RoadSection.End ? "→"+v.RoadSection.End : "")) : "";
         map[v.VDID] = {
           mile: mile, dir: dir, road: v.RoadName || (p ? p.road : "") || "",
+          cls: (v.RoadClass === undefined || v.RoadClass === null) ? "" : String(v.RoadClass),
           section: sec, lat: Number(v.PositionLat), lon: Number(v.PositionLon)
         };
       });
@@ -345,8 +387,18 @@
       .then(function(){ S.busy = false; });
   }
 
+  function clearReadings(){
+    $("lanes").innerHTML = "";
+    $("verdict").textContent = "沒有可顯示的資料";
+    $("thead").innerHTML = "<th>位置</th>";
+    $("rows").innerHTML = '<tr><td style="text-align:center;color:var(--dim);padding:22px">—</td></tr>';
+    $("cap").textContent = "逐點車速";
+  }
+
   function fail(err){
     setStat("讀取失敗","err");
+    clearReadings();
+    if(S.mode !== "fwy") $("selRoad").innerHTML = '<option value="">無資料</option>';
     var m = String(err && err.message || err);
     if(m === "NOKEY"){
       setStat("尚未設定金鑰","stale");
@@ -356,8 +408,10 @@
       say("金鑰被拒絕。到設定確認 Client ID 與 Secret 沒有貼錯或多了空白。");
     }else if(m === "RATE"){
       say("今天的 API 額度用完了，明天重置。");
-    }else if(m.indexOf("404") >= 0 || m === "NOPATH"){
-      say("這個來源查不到資料。國道請換一條路線，一般道路請換一個縣市——不是每個縣市都有布設偵測器。");
+    }else if(S.mode === "hwy"){
+      say("省道／快速道路的端點沒試中。下面是每個候選路徑的回應，把整段貼給我就能定出正確寫法：<br><code>" + m + "</code>");
+    }else if(m.indexOf("HTTP 400") >= 0 || m.indexOf("HTTP 404") >= 0 || m === "NOPATH"){
+      say("這個來源沒有資料。不是每個縣市都有布設偵測器，換一個縣市或改用國道試試。<br><code>" + m + "</code>");
     }else if(m.indexOf("Failed to fetch") >= 0 || m.indexOf("NetworkError") >= 0){
       say("連不上 TDX。可能是網路斷了，或瀏覽器擋下跨網域請求（CORS）。<br>把這行訊息告訴我：<code>" + m + "</code>");
     }else{
@@ -366,7 +420,7 @@
   }
 
   /* ───────── 顯示 ───────── */
-  function thresholds(){ return S.mode === "fwy" ? [70,40] : [30,15]; }
+  function thresholds(){ return S.mode === "city" ? [30,15] : [70,40]; }
   function sClass(v){ var t = thresholds(); return v >= t[0] ? "s-flow" : (v >= t[1] ? "s-slow" : "s-jam"); }
 
   function laneNames(n){
@@ -386,10 +440,11 @@
         if(!p) return;
         meta = { mile:p.mile, dir:p.dir, road:p.road, section:"", lat:NaN, lon:NaN };
       }
+      if(dropRoad(meta)) return;
       if(meta.dir) dirs[meta.dir] = true;
       if(meta.road) roads[meta.road] = true;
 
-      if(S.mode === "city" && S.road && meta.road !== S.road) return;
+      if(S.mode !== "fwy" && S.road && meta.road !== S.road) return;
       if(S.dir && meta.dir && meta.dir !== S.dir) return;
 
       var lanes = [], vol = 0;
@@ -405,13 +460,13 @@
       if(!lanes.filter(function(x){ return x > 0; }).length) return;
 
       pts.push({
-        mile: meta.mile, section: meta.section || meta.road || v.VDID,
+        id: v.VDID || "", mile: meta.mile, section: meta.section || meta.road || v.VDID,
         lanes: lanes, vol: vol, lat: meta.lat, lon: meta.lon
       });
     });
 
     buildDirChips(Object.keys(dirs));
-    if(S.mode === "city") buildRoadSelect();
+    if(S.mode !== "fwy") buildRoadSelect();
 
     if(!pts.length){
       $("lanes").innerHTML = "";
@@ -427,8 +482,14 @@
       pts.forEach(function(p){ p.d = (isFinite(p.lat) && isFinite(p.lon)) ? dist(S.here.lat,S.here.lon,p.lat,p.lon) : 9999; });
       pts.sort(function(a,b){ return a.d - b.d; });
       pts = pts.slice(0,15);
-    }else if(pts[0].mile !== null && pts[0].mile !== undefined){
-      pts.sort(function(a,b){ return (S.dir === "N" ? (b.mile - a.mile) : (a.mile - b.mile)); });
+    }else{
+      pts.sort(function(a,b){
+        var am = (a.mile === null || a.mile === undefined), bm = (b.mile === null || b.mile === undefined);
+        if(am && bm) return String(a.id).localeCompare(String(b.id));
+        if(am) return 1;   // 沒里程的排最後
+        if(bm) return -1;
+        return S.dir === "N" ? (b.mile - a.mile) : (a.mile - b.mile);
+      });
     }
 
     // 車道統計
@@ -458,7 +519,8 @@
 
     $("lanes").innerHTML = order.map(function(i,col){
       var v = avg[i], w = worst[i];
-      var tag = w ? "最慢 " + Math.round(w.s) + (w.at.mile != null ? " @ " + w.at.mile.toFixed(1) + "K" : "") : "";
+      var meaningful = w && cnt[i] >= 3 && w.s < v - 3;
+      var tag = meaningful ? "最慢 " + Math.round(w.s) + (w.at.mile != null ? " @ " + w.at.mile.toFixed(1) + "K" : "") : "";
       return '<div class="lane' + (i === best && spread >= 5 ? " pick" : "") + '">' +
         '<div class="lane-name">' + names[col] + '</div>' +
         '<div class="lane-speed num ' + (v ? sClass(v) : "") + '">' + (v ? Math.round(v) : "--") + '</div>' +
@@ -476,9 +538,11 @@
         '<small>' + (n < 2 ? "此路段只有單一車道資料" : "各車道差不到 5 km/h，換道沒有意義") + '</small>';
     }else{
       var w2 = worst[best];
+      var warn = w2 && cnt[best] >= 3 && w2.s < avg[best] - 10;
       vd.innerHTML = '走 <b class="' + sClass(bestV) + '">' + names[order.indexOf(best)] + '</b>，快約 ' + Math.round(spread) + ' km/h' +
-        (w2 ? '<small>但 ' + (w2.at.mile != null ? w2.at.mile.toFixed(1) + "K" : w2.at.section) +
-              ' 有一台跑 ' + Math.round(w2.s) + '，可能一路擋到底</small>' : '');
+        (warn ? '<small>但 ' + (w2.at.mile != null ? w2.at.mile.toFixed(1) + "K" : w2.at.section) +
+              ' 有一台跑 ' + Math.round(w2.s) + '，可能一路擋到底</small>'
+              : (pts.length < 3 ? '<small>只有 ' + pts.length + ' 處偵測器，樣本太少</small>' : ''));
     }
 
     // 逐點表
@@ -495,8 +559,8 @@
     $("rows").innerHTML = pts.map(function(p){
       var vs = p.lanes.filter(function(x){ return x > 0; });
       var isWorst = Math.min.apply(null, vs) === floor;
-      var head = S.geo && p.d < 9999 ? p.d.toFixed(1) + " km · " + (p.section || "")
-               : (p.mile != null ? p.mile.toFixed(1) + "K" : (p.section || ""));
+      var head = S.geo && p.d < 9999 ? p.d.toFixed(1) + " km · " + (p.section || shortID(p.id))
+               : (p.mile != null ? p.mile.toFixed(1) + "K" : shortID(p.id) || p.section || "");
       var cells = order.map(function(i){
         var x = p.lanes[i];
         return '<td class="num">' + (x > 0 ? '<span class="' + sClass(x) + '">' + Math.round(x) + '</span>'
@@ -506,12 +570,22 @@
         cells + '<td class="num" style="color:var(--dim)">' + (p.vol || "–") + '</td></tr>';
     }).join("");
 
-    $("cap").textContent = pts.length + " 處偵測器 · 車流為統計區間內車輛數";
+    $("cap").textContent = pts.length + " 處偵測器"
+      + (S.usedPath ? " · 來源 " + S.usedPath : "")
+      + " · 車流為統計區間內車輛數";
     setStat("更新於 " + new Date().toTimeString().slice(0,8));
   }
 
   /* ───────── 選單 ───────── */
   function buildScopeSelect(){
+    if(S.mode === "hwy"){
+      $("fScope").className = "field hide";
+      $("fRoad").className = "field";
+      $("badge").textContent = "省道";
+      $("badge").className = "badge city";
+      return;
+    }
+    $("fScope").className = "field";
     var list = S.mode === "fwy" ? FREEWAYS : CITIES;
     var q = ($("qScope").value || "").trim().toLowerCase();
     var hit = list.filter(function(x){
@@ -530,14 +604,22 @@
     if(!empty && hit.length === 1 && hit[0][0] !== S.scope){
       S.scope = hit[0][0]; S.road = ""; S.dir = ""; S.statics = null;
       localStorage.setItem(LS+"scope", S.scope);
+      localStorage.setItem(LS+"road", "");
       $("qRoad").value = "";
+      $("selRoad").innerHTML = '<option value="">載入中…</option>';
+      $("dirChips").innerHTML = "";
+      clearReadings();
       load();
     }
   }
 
   function buildRoadSelect(){
     var set = {};
-    for(var k in S.statics){ var r = S.statics[k] && S.statics[k].road; if(r) set[r] = true; }
+    for(var k in S.statics){
+      var meta = S.statics[k];
+      if(!meta || !meta.road || dropRoad(meta)) continue;
+      set[meta.road] = true;
+    }
     var all = Object.keys(set).sort();
     var q = ($("qRoad").value || "").trim().toLowerCase();
     var hit = all.filter(function(r){ return !q || r.toLowerCase().indexOf(q) >= 0; });
@@ -589,17 +671,22 @@
   /* ───────── 事件 ───────── */
   function setMode(m){
     S.mode = m;
-    S.scope = (m === "fwy") ? "N5" : "Taipei";
+    S.scope = (m === "fwy") ? "N5" : (m === "city" ? "Taipei" : "");
     S.road = ""; S.dir = ""; S.statics = null;
     localStorage.setItem(LS+"mode", m);
     localStorage.setItem(LS+"scope", S.scope);
+    localStorage.setItem(LS+"road", "");
     $("tabFwy").setAttribute("aria-pressed", m === "fwy");
+    $("tabHwy").setAttribute("aria-pressed", m === "hwy");
     $("tabCity").setAttribute("aria-pressed", m === "city");
     $("qScope").value = ""; $("qRoad").value = "";
+    $("dirChips").innerHTML = "";
+    clearReadings();
     buildScopeSelect();
     load();
   }
   $("tabFwy").onclick = function(){ setMode("fwy"); };
+  $("tabHwy").onclick = function(){ setMode("hwy"); };
   $("tabCity").onclick = function(){ setMode("city"); };
 
   $("qScope").oninput = function(){ buildScopeSelect(); };
@@ -608,7 +695,11 @@
   $("selScope").onchange = function(){
     S.scope = this.value; S.road = ""; S.dir = ""; S.statics = null;
     localStorage.setItem(LS+"scope", S.scope);
+    localStorage.setItem(LS+"road", "");
     $("qRoad").value = "";
+    $("selRoad").innerHTML = '<option value="">載入中…</option>';
+    $("dirChips").innerHTML = "";
+    clearReadings();
     load();
   };
   $("selRoad").onchange = function(){
@@ -641,6 +732,7 @@
 
   /* ───────── 啟動 ───────── */
   $("tabFwy").setAttribute("aria-pressed", S.mode === "fwy");
+  $("tabHwy").setAttribute("aria-pressed", S.mode === "hwy");
   $("tabCity").setAttribute("aria-pressed", S.mode === "city");
   buildScopeSelect();
   buildDirChips([]);
