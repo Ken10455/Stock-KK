@@ -46,6 +46,14 @@
     border-radius:8px;padding:9px 10px;font-size:15px;font-family:inherit;
   }
   select:focus{outline:2px solid var(--flow)}
+  .field{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .field.hide{display:none}
+  .field input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);
+    color:var(--paint);border-radius:8px;padding:9px 11px;font-size:15px;font-family:inherit;
+    -webkit-appearance:none;appearance:none}
+  .field input:focus{outline:2px solid var(--flow);border-color:transparent}
+  .field input::placeholder{color:#5f6b77}
+  .field select{flex:1.3}
   .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
   .chip{background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:20px;
     padding:5px 13px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
@@ -123,9 +131,13 @@
     <button id="tabCity" aria-pressed="false">一般道路</button>
   </div>
 
-  <div class="picks">
+  <div class="field" id="fScope">
+    <input type="search" id="qScope" placeholder="搜尋縣市" autocomplete="off" spellcheck="false" aria-label="搜尋縣市">
     <select id="selScope" aria-label="路線或縣市"></select>
-    <select id="selRoad" aria-label="道路" style="display:none"></select>
+  </div>
+  <div class="field hide" id="fRoad">
+    <input type="search" id="qRoad" placeholder="搜尋道路" autocomplete="off" spellcheck="false" aria-label="搜尋道路">
+    <select id="selRoad" aria-label="道路"></select>
   </div>
 
   <div class="chips" id="dirChips"></div>
@@ -264,7 +276,9 @@
     return m ? { road:m[1], dir:m[2], mile:parseFloat(m[3]) } : null;
   }
   function dirLabel(d){
-    return {N:"北向",S:"南向",E:"東向",W:"西向","0":"順向","1":"逆向"}[String(d)] || String(d);
+    return {N:"北向",S:"南向",E:"東向",W:"西向",
+            NE:"東北向",NW:"西北向",SE:"東南向",SW:"西南向",
+            "0":"順向","1":"逆向"}[String(d)] || String(d);
   }
   function dist(a,b,c,d){ // 粗略公里
     var x = (a-c)*111, y = (b-d)*101;
@@ -397,7 +411,7 @@
     });
 
     buildDirChips(Object.keys(dirs));
-    if(S.mode === "city") buildRoadSelect(Object.keys(roads).sort());
+    if(S.mode === "city") buildRoadSelect();
 
     if(!pts.length){
       $("lanes").innerHTML = "";
@@ -499,18 +513,46 @@
   /* ───────── 選單 ───────── */
   function buildScopeSelect(){
     var list = S.mode === "fwy" ? FREEWAYS : CITIES;
-    $("selScope").innerHTML = list.map(function(x){
+    var q = ($("qScope").value || "").trim().toLowerCase();
+    var hit = list.filter(function(x){
+      return !q || x[1].indexOf(q) >= 0 || x[0].toLowerCase().indexOf(q) >= 0;
+    });
+    var empty = !hit.length;
+    if(empty) hit = list;
+    $("selScope").innerHTML = hit.map(function(x){
       return '<option value="' + x[0] + '"' + (x[0] === S.scope ? " selected" : "") + '>' + x[1] + '</option>';
     }).join("");
-    $("selRoad").style.display = S.mode === "city" ? "" : "none";
+    $("qScope").placeholder = (S.mode === "fwy" ? "搜尋路線" : "搜尋縣市") + (empty && q ? "（查無符合）" : "");
+    $("fRoad").className = "field" + (S.mode === "city" ? "" : " hide");
     $("badge").textContent = S.mode === "fwy" ? "國道" : "市區";
     $("badge").className = "badge" + (S.mode === "fwy" ? "" : " city");
+    // 只剩一個結果就直接換過去
+    if(!empty && hit.length === 1 && hit[0][0] !== S.scope){
+      S.scope = hit[0][0]; S.road = ""; S.dir = ""; S.statics = null;
+      localStorage.setItem(LS+"scope", S.scope);
+      $("qRoad").value = "";
+      load();
+    }
   }
-  function buildRoadSelect(roads){
-    var cur = S.road;
-    $("selRoad").innerHTML = '<option value="">全部道路</option>' + roads.map(function(r){
-      return '<option value="' + r + '"' + (r === cur ? " selected" : "") + '>' + r + '</option>';
-    }).join("");
+
+  function buildRoadSelect(){
+    var set = {};
+    for(var k in S.statics){ var r = S.statics[k] && S.statics[k].road; if(r) set[r] = true; }
+    var all = Object.keys(set).sort();
+    var q = ($("qRoad").value || "").trim().toLowerCase();
+    var hit = all.filter(function(r){ return !q || r.toLowerCase().indexOf(q) >= 0; });
+    var empty = q && !hit.length;
+    if(empty) hit = all;
+    $("selRoad").innerHTML = '<option value="">全部道路（' + all.length + '）</option>' +
+      hit.map(function(r){
+        return '<option value="' + r + '"' + (r === S.road ? " selected" : "") + '>' + r + '</option>';
+      }).join("");
+    $("qRoad").placeholder = "搜尋道路" + (empty ? "（查無符合）" : "");
+    if(!empty && q && hit.length === 1 && hit[0] !== S.road){
+      S.road = hit[0];
+      localStorage.setItem(LS+"road", S.road);
+      load();
+    }
   }
   function buildDirChips(dirs){
     dirs = dirs.filter(Boolean).sort();
@@ -553,15 +595,20 @@
     localStorage.setItem(LS+"scope", S.scope);
     $("tabFwy").setAttribute("aria-pressed", m === "fwy");
     $("tabCity").setAttribute("aria-pressed", m === "city");
+    $("qScope").value = ""; $("qRoad").value = "";
     buildScopeSelect();
     load();
   }
   $("tabFwy").onclick = function(){ setMode("fwy"); };
   $("tabCity").onclick = function(){ setMode("city"); };
 
+  $("qScope").oninput = function(){ buildScopeSelect(); };
+  $("qRoad").oninput  = function(){ buildRoadSelect(); };
+
   $("selScope").onchange = function(){
     S.scope = this.value; S.road = ""; S.dir = ""; S.statics = null;
     localStorage.setItem(LS+"scope", S.scope);
+    $("qRoad").value = "";
     load();
   };
   $("selRoad").onchange = function(){
