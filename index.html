@@ -70,6 +70,11 @@
   .lane-name{font-size:13px;color:var(--dim);font-weight:600}
   .lane-speed{font-size:52px;font-weight:800;letter-spacing:-.04em;line-height:1.05;margin:4px 0 0}
   .lane-unit{font-size:11px;color:var(--dim);letter-spacing:.1em}
+  .lane-heavy{font-size:12px;color:var(--dim);margin-top:6px;letter-spacing:.02em}
+  .hint{font-size:13px;line-height:1.6;padding:9px 12px;border-radius:9px;margin-bottom:8px}
+  .hint.ok{border:1px solid rgba(55,194,107,.35);background:rgba(55,194,107,.07);color:#9fdcb8}
+  .hint.bad{border:1px solid rgba(232,184,58,.45);background:rgba(232,184,58,.09);color:#f0d391}
+  .hint b{color:var(--paint)}
   .lane-tag{margin-top:9px;font-size:12px;color:var(--dim);min-height:18px}
   .lane.pick .lane-tag{color:var(--flow)}
 
@@ -144,6 +149,7 @@
   <div class="chips" id="dirChips"></div>
 
   <div class="lanes" id="lanes"></div>
+  <div id="hint"></div>
   <div class="verdict" id="verdict">選好路線後會顯示各車道車速</div>
 
   <table>
@@ -172,7 +178,7 @@
   <input type="text" id="cid" autocomplete="off" spellcheck="false" placeholder="xxxx-yyyyyyyy">
   <label for="csec">Client Secret</label>
   <input type="password" id="csec" autocomplete="off" spellcheck="false">
-  <label class="swap"><input type="checkbox" id="swapLane"> 車道由內而外排列（預設由外而內）</label>
+  <label class="swap"><input type="checkbox" id="swapLane"> 車道左右標反了，請對調（預設左內側、右外側）</label>
   <div class="actions">
     <button id="cfgCancel">取消</button>
     <button class="primary" id="cfgSave">儲存並讀取</button>
@@ -377,6 +383,16 @@
   }
 
   /* ───────── 讀取 ───────── */
+  function refreshHere(){
+    if(!S.geo || !navigator.geolocation) return Promise.resolve();
+    return new Promise(function(res){
+      navigator.geolocation.getCurrentPosition(function(pos){
+        S.here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        res();
+      }, function(){ res(); }, { enableHighAccuracy:true, timeout:6000, maximumAge:10000 });
+    });
+  }
+
   function load(force){
     if(S.busy) return Promise.resolve();
     if(!force && Date.now() < S.pauseUntil){
@@ -385,7 +401,8 @@
       return Promise.resolve();
     }
     S.busy = true; S.lastLoad = Date.now(); setStat("讀取中…"); say("");
-    return loadStatics()
+    return refreshHere()
+      .then(loadStatics)
       .then(function(){ return apiTry(livePaths()); })
       .then(function(j){ render(unwrap(j)); })
       .catch(fail)
@@ -394,6 +411,7 @@
 
   function clearReadings(){
     $("lanes").innerHTML = "";
+    $("hint").innerHTML = "";
     $("verdict").textContent = "沒有可顯示的資料";
     $("thead").innerHTML = "<th>位置</th>";
     $("rows").innerHTML = '<tr><td style="text-align:center;color:var(--dim);padding:22px">—</td></tr>';
@@ -431,10 +449,11 @@
   function thresholds(){ return S.mode === "city" ? [30,15] : [70,40]; }
   function sClass(v){ var t = thresholds(); return v >= t[0] ? "s-flow" : (v >= t[1] ? "s-slow" : "s-jam"); }
 
+  // 台灣靠右行駛，內側在左、外側在右，畫面順序跟駕駛座看出去一致
   function laneNames(n){
-    if(n === 2) return ["外側","內側"];
-    if(n === 3) return ["外側","中線","內側"];
-    var a = []; for(var i=0;i<n;i++) a.push("車道"+(i+1));
+    if(n === 2) return ["內側","外側"];
+    if(n === 3) return ["內側","中線","外側"];
+    var a = []; for(var i=n;i>=1;i--) a.push("車道"+i);
     return a;
   }
 
@@ -455,21 +474,29 @@
       if(S.mode !== "fwy" && S.road && meta.road !== S.road) return;
       if(S.dir && meta.dir && meta.dir !== S.dir) return;
 
-      var lanes = [], vol = 0;
+      var lanes = [], vol = 0, heavy = [], total = [];
       (v.LinkFlows || []).forEach(function(lf){
         (lf.Lanes || []).forEach(function(ln){
           if(ln.LaneType !== undefined && ln.LaneType !== 1) return;
           var s = Number(ln.Speed);
           if(!(s > 0 && s < 200)) return;
-          lanes[Number(ln.LaneID) || 0] = s;
-          (ln.Vehicles || []).forEach(function(x){ var q = Number(x.Volume); if(q > 0) vol += q; });
+          var id = Number(ln.LaneID) || 0;
+          lanes[id] = s;
+          heavy[id] = heavy[id] || 0; total[id] = total[id] || 0;
+          (ln.Vehicles || []).forEach(function(x){
+            var q = Number(x.Volume);
+            if(!(q > 0)) return;
+            vol += q; total[id] += q;
+            // 大型車 L 與聯結車 T 只會走外側，是判斷車道方向最可靠的線索
+            if(/^[LT]/i.test(String(x.VehicleType))) heavy[id] += q;
+          });
         });
       });
       if(!lanes.filter(function(x){ return x > 0; }).length) return;
 
       pts.push({
         id: v.VDID || "", mile: meta.mile, section: meta.section || meta.road || v.VDID,
-        lanes: lanes, vol: vol, lat: meta.lat, lon: meta.lon
+        lanes: lanes, heavy: heavy, total: total, vol: vol, lat: meta.lat, lon: meta.lon
       });
     });
 
@@ -478,6 +505,7 @@
 
     if(!pts.length){
       $("lanes").innerHTML = "";
+      $("hint").innerHTML = "";
       $("verdict").textContent = "這個條件下沒有偵測器回報";
       $("rows").innerHTML = '<tr><td style="text-align:center;color:var(--dim);padding:22px">換一個方向或道路試試</td></tr>';
       $("thead").innerHTML = "<th>位置</th>";
@@ -503,54 +531,104 @@
     // 車道統計
     var n = 0;
     pts.forEach(function(p){ n = Math.max(n, p.lanes.length); });
-    var sum = [], cnt = [], worst = [];
-    for(var i=0;i<n;i++){ sum[i]=0; cnt[i]=0; worst[i]=null; }
+    var sum = [], cnt = [], worst = [], hv = [], tv = [];
+    for(var i=0;i<n;i++){ sum[i]=0; cnt[i]=0; worst[i]=null; hv[i]=0; tv[i]=0; }
     pts.forEach(function(p){
       for(var i=0;i<n;i++){
+        hv[i] += (p.heavy && p.heavy[i]) || 0;
+        tv[i] += (p.total && p.total[i]) || 0;
         var s = p.lanes[i];
         if(!(s > 0)) continue;
         sum[i]+=s; cnt[i]++;
         if(!worst[i] || s < worst[i].s) worst[i] = { s:s, at:p };
       }
     });
-    var avg = [];
-    for(var i2=0;i2<n;i2++) avg[i2] = cnt[i2] ? sum[i2]/cnt[i2] : 0;
+    var avg = [], share = [], tvAll = 0;
+    for(var i2=0;i2<n;i2++){
+      avg[i2] = cnt[i2] ? sum[i2]/cnt[i2] : 0;
+      share[i2] = tv[i2] ? (hv[i2]/tv[i2])*100 : -1;
+      tvAll += tv[i2];
+    }
 
-    var order = []; for(var i3=0;i3<n;i3++) order.push(i3);
+    // LaneID 0 視為最外側，畫面由左至右是內→外，所以預設反序排
+    var order = []; for(var i3=n-1;i3>=0;i3--) order.push(i3);
     if(S.swap) order.reverse();
     var names = laneNames(n);
 
-    // 車道卡
+    // 定位模式：主畫面改成顯示「你所在的那一處」，不是整條路的平均
+    var focus = (S.geo && S.here && pts.length && pts[0].d < 5) ? pts[0] : null;
+    var vals = focus ? focus.lanes : avg;
+
     var best = -1, bestV = -1;
-    order.forEach(function(i){ if(avg[i] > bestV){ bestV = avg[i]; best = i; } });
-    var spread = bestV - Math.min.apply(null, avg.filter(function(x){ return x > 0; }).concat([bestV]));
+    order.forEach(function(i){ if((vals[i] || 0) > bestV){ bestV = vals[i] || 0; best = i; } });
+    var pos = [];
+    for(var ip=0; ip<n; ip++){ if(vals[ip] > 0) pos.push(vals[ip]); }
+    var spread = pos.length > 1 ? bestV - Math.min.apply(null, pos) : 0;
 
     $("lanes").innerHTML = order.map(function(i,col){
-      var v = avg[i], w = worst[i];
-      var meaningful = w && cnt[i] >= 3 && w.s < v - 3;
-      var tag = meaningful ? "最慢 " + Math.round(w.s) + (w.at.mile != null ? " @ " + w.at.mile.toFixed(1) + "K" : "") : "";
+      var v = vals[i] || 0, w = worst[i];
+      var tag;
+      if(focus){
+        tag = avg[i] ? "全線均 " + Math.round(avg[i]) : "";
+      }else{
+        var meaningful = w && cnt[i] >= 3 && w.s < avg[i] - 3;
+        tag = meaningful ? "最慢 " + Math.round(w.s) + (w.at.mile != null ? " @ " + w.at.mile.toFixed(1) + "K" : "") : "";
+      }
+      var hvTxt = share[i] >= 0 ? "大車 " + share[i].toFixed(0) + "%" : "";
       return '<div class="lane' + (i === best && spread >= 5 ? " pick" : "") + '">' +
         '<div class="lane-name">' + names[col] + '</div>' +
         '<div class="lane-speed num ' + (v ? sClass(v) : "") + '">' + (v ? Math.round(v) : "--") + '</div>' +
         '<div class="lane-unit">km/h</div>' +
+        '<div class="lane-heavy">' + hvTxt + '</div>' +
         '<div class="lane-tag">' + tag + '</div></div>';
     }).join("");
+
+    // 大型車依規定走外側，用它反推車道編號方向對不對
+    var hint = "";
+    if(n >= 2 && tvAll >= 60){
+      var top = -1, topV = -1, ok = true;
+      for(var i5=0;i5<n;i5++){
+        if(share[i5] < 0){ ok = false; break; }
+        if(share[i5] > topV){ topV = share[i5]; top = i5; }
+      }
+      // 門檻拉高：真正的大車道通常在 15% 以上，低於此多半是雜訊或禁行大車的路段
+      if(ok && topV >= 15){
+        var outer = order[order.length - 1];   // 畫面最右邊那格＝標成「外側」的
+        var gap = topV - (share[outer] || 0);
+        if(gap >= 8){
+          hint = (top !== outer)
+            ? '<div class="hint bad">大車比例最高的是「' + names[order.indexOf(top)] +
+              '」（' + topV.toFixed(0) + '%），但大車依規定走外側 — 車道順序可能標反了，到<b>設定</b>勾選對調</div>'
+            : '<div class="hint ok">大車集中在「' + names[names.length - 1] + '」（' + topV.toFixed(0) + '%），車道順序正確</div>';
+        }
+      }
+    }
+    $("hint").innerHTML = hint;
 
     var overall = 0, oc = 0;
     for(var i4=0;i4<n;i4++){ if(cnt[i4]){ overall += sum[i4]; oc += cnt[i4]; } }
     overall = oc ? overall/oc : 0;
 
+    var where = "";
+    if(focus){
+      var wh = (focus.mile !== null && focus.mile !== undefined)
+             ? focus.mile.toFixed(1) + "K" : (focus.section || shortID(focus.id));
+      where = "你在 " + wh + " 附近，最近的偵測器 " + Math.round(focus.d * 1000) + " 公尺";
+    }
+
     var vd = $("verdict");
     if(n < 2 || spread < 5){
-      vd.innerHTML = '整段平均 <b class="' + sClass(overall) + '">' + Math.round(overall) + '</b> km/h' +
-        '<small>' + (n < 2 ? "此路段只有單一車道資料" : "各車道差不到 5 km/h，換道沒有意義") + '</small>';
+      vd.innerHTML = (focus ? '此處 ' : '整段平均 ') +
+        '<b class="' + sClass(focus ? bestV : overall) + '">' + Math.round(focus ? bestV : overall) + '</b> km/h' +
+        '<small>' + (where || (n < 2 ? "此路段只有單一車道資料" : "各車道差不到 5 km/h，換道沒有意義")) + '</small>';
     }else{
       var w2 = worst[best];
-      var warn = w2 && cnt[best] >= 3 && w2.s < avg[best] - 10;
+      var warn = !focus && w2 && cnt[best] >= 3 && w2.s < avg[best] - 10;
       vd.innerHTML = '走 <b class="' + sClass(bestV) + '">' + names[order.indexOf(best)] + '</b>，快約 ' + Math.round(spread) + ' km/h' +
-        (warn ? '<small>但 ' + (w2.at.mile != null ? w2.at.mile.toFixed(1) + "K" : w2.at.section) +
-              ' 有一台跑 ' + Math.round(w2.s) + '，可能一路擋到底</small>'
-              : (pts.length < 3 ? '<small>只有 ' + pts.length + ' 處偵測器，樣本太少</small>' : ''));
+        '<small>' + (where ? where
+          : (warn ? '但 ' + (w2.at.mile != null ? w2.at.mile.toFixed(1) + "K" : w2.at.section) +
+                    ' 有一台跑 ' + Math.round(w2.s) + '，可能一路擋到底'
+                  : (pts.length < 3 ? '只有 ' + pts.length + ' 處偵測器，樣本太少' : ''))) + '</small>';
     }
 
     // 逐點表
@@ -650,7 +728,7 @@
     html += dirs.map(function(d){
       return '<button class="chip" data-dir="' + d + '" aria-pressed="' + (S.dir === d) + '">' + dirLabel(d) + '</button>';
     }).join("");
-    html += '<button class="chip geo" id="chipGeo" aria-pressed="' + S.geo + '">附近 15 處</button>';
+    html += '<button class="chip geo" id="chipGeo" aria-pressed="' + S.geo + '">我的位置</button>';
     $("dirChips").innerHTML = html;
 
     Array.prototype.forEach.call($("dirChips").querySelectorAll("[data-dir]"), function(b){
@@ -669,7 +747,7 @@
     setStat("定位中…");
     navigator.geolocation.getCurrentPosition(function(pos){
       S.here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-      S.geo = true; load();
+      S.geo = true; load(true);
     }, function(){
       say("拿不到定位。請在瀏覽器允許此網站取用位置，網址也要是 https。");
       setStat("定位失敗","stale");
