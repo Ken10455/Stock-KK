@@ -70,6 +70,8 @@
   .lane-name{font-size:13px;color:var(--dim);font-weight:600}
   .lane-speed{font-size:52px;font-weight:800;letter-spacing:-.04em;line-height:1.05;margin:4px 0 0}
   .lane-unit{font-size:11px;color:var(--dim);letter-spacing:.1em}
+  .ramp{font-size:11px;color:var(--slow);border:1px solid rgba(232,184,58,.4);
+    border-radius:4px;padding:0 4px;margin-right:4px;white-space:nowrap}
   .lane-heavy{font-size:12px;color:var(--dim);margin-top:6px;letter-spacing:.02em}
   .hint{font-size:13px;line-height:1.6;padding:9px 12px;border-radius:9px;margin-bottom:8px}
   .hint.ok{border:1px solid rgba(55,194,107,.35);background:rgba(55,194,107,.07);color:#9fdcb8}
@@ -88,7 +90,11 @@
   th:first-child{text-align:left}
   td{padding:7px 5px;text-align:right;border-bottom:1px solid rgba(42,51,61,.5)}
   td:first-child{text-align:left;color:var(--dim);font-size:13px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  tr.worst td{background:rgba(224,80,58,.08)}
+  tr.here td:first-child{color:var(--paint);font-weight:700}
+  .now{font-size:11px;font-weight:700;color:#0b0f13;background:var(--flow);
+    border-radius:4px;padding:1px 5px;margin-right:5px;white-space:nowrap}
+  .slowest{font-size:11px;font-weight:700;color:#0b0f13;background:var(--jam);
+    border-radius:4px;padding:1px 5px;margin-right:5px;white-space:nowrap}
 
   .status{margin-top:18px;font-size:13px;color:var(--dim);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--flow);flex:none}
@@ -215,7 +221,8 @@
     road: localStorage.getItem(LS+"road") || "",       // 一般道路的道路名稱
     dir: localStorage.getItem(LS+"dir") || "",
     swap: localStorage.getItem(LS+"swap") === "1",
-    geo: false, here: null,
+    mainOnly: localStorage.getItem(LS+"mainOnly") !== "0",
+    geo: false, here: null, heading: null, autoLock: false,
     statics: null, staticsKey: "",
     token: null, tokenExp: 0, timer: null, busy: false, pauseUntil: 0, lastLoad: 0
   };
@@ -295,6 +302,59 @@
             NE:"東北向",NW:"西北向",SE:"東南向",SW:"西南向",
             "0":"順向","1":"逆向"}[String(d)] || String(d);
   }
+  // 兩點之間的方位角（0=正北，順時針）
+  function bearing(a,b){
+    var r = Math.PI/180;
+    var dLon = (b.lon - a.lon) * r;
+    var y = Math.sin(dLon) * Math.cos(b.lat * r);
+    var x = Math.cos(a.lat * r) * Math.sin(b.lat * r) -
+            Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos(dLon);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+
+  var COMPASS = { N:0, NE:45, E:90, SE:135, S:180, SW:225, W:270, NW:315 };
+
+  // 把行進方位角對到資料裡實際存在的方向代碼
+  function headingCode(deg, avail){
+    if(deg === null || deg === undefined || isNaN(deg)) return "";
+    var best = "", bestGap = 999;
+    (avail || []).forEach(function(c){
+      if(!(c in COMPASS)) return;
+      var gap = Math.abs(((COMPASS[c] - deg + 540) % 360) - 180);
+      if(gap < bestGap){ bestGap = gap; best = c; }
+    });
+    return bestGap <= 45 ? best : "";        // 夾角太大就不亂猜
+  }
+
+  // 各縣市概略中心，用來從座標挑最接近的一個
+  var CITY_POS = {
+    Keelung:[25.128,121.741], Taipei:[25.037,121.564], Taoyuan:[24.993,121.301],
+    Hsinchu:[24.804,120.971], HsinchuCounty:[24.755,121.105], Taichung:[24.147,120.674],
+    NantouCounty:[23.913,120.685], YunlinCounty:[23.709,120.431], Chiayi:[23.480,120.449],
+    ChiayiCounty:[23.452,120.255], Tainan:[22.999,120.227], Kaohsiung:[22.627,120.302],
+    PingtungCounty:[22.669,120.488], HualienCounty:[23.991,121.601],
+    TaitungCounty:[22.758,121.144], KinmenCounty:[24.436,118.317]
+  };
+  function nearestCity(lat, lon){
+    var best = "", bestD = 1e9;
+    for(var k in CITY_POS){
+      var d = dist(lat, lon, CITY_POS[k][0], CITY_POS[k][1]);
+      if(d < bestD){ bestD = d; best = k; }
+    }
+    return bestD < 40 ? best : "";           // 超過 40 公里就不猜
+  }
+
+  // 主線或匝道：優先看 LaneType（1 主線、2 匝道），其次看 VDID 里程後的位置代碼（M 為主線）
+  function vdKind(id, types){
+    for(var i=0;i<(types||[]).length;i++){
+      if(types[i] === 2 || types[i] === 3) return "ramp";
+    }
+    if((types||[]).length && types.every(function(t){ return t === 1; })) return "main";
+    var m = /-\d+\.\d+-([A-Za-z]+)-/.exec(String(id || ""));
+    if(m) return m[1].toUpperCase() === "M" ? "main" : "ramp";
+    return "unknown";   // 判不出來就不隱藏
+  }
+
   // 沒有里程時，用偵測器編號的辨識段當位置標籤
   function shortID(id){
     if(!id) return "";
@@ -387,7 +447,23 @@
     if(!S.geo || !navigator.geolocation) return Promise.resolve();
     return new Promise(function(res){
       navigator.geolocation.getCurrentPosition(function(pos){
-        S.here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        var here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        var h = pos.coords.heading, sp = pos.coords.speed;
+        if(h !== null && h !== undefined && !isNaN(h) && (sp === null || sp === undefined || sp > 1.5)){
+          S.heading = h;                       // 裝置自己給的行進方位最準
+        }else if(S.here && dist(S.here.lat, S.here.lon, here.lat, here.lon) > 0.05){
+          S.heading = bearing(S.here, here);   // 沒有的話用前後兩點推
+        }
+        S.here = here;
+        // 縣市模式順便對到你所在的縣市
+        if(S.mode === "city" && !S.autoLock){
+          var c = nearestCity(here.lat, here.lon);
+          if(c && c !== S.scope){
+            S.scope = c; S.road = ""; S.statics = null;
+            localStorage.setItem(LS+"scope", c);
+            buildScopeSelect();
+          }
+        }
         res();
       }, function(){ res(); }, { enableHighAccuracy:true, timeout:6000, maximumAge:10000 });
     });
@@ -458,8 +534,9 @@
   }
 
   function render(lives){
-    var st = S.statics, pts = [], dirs = {}, roads = {};
+    var st = S.statics, all = [], pts = [];
 
+    // 第一輪：把所有可用的偵測器讀出來，先不套方向與道路條件
     lives.forEach(function(v){
       var meta = st[v.VDID];
       if(!meta){
@@ -468,20 +545,15 @@
         meta = { mile:p.mile, dir:p.dir, road:p.road, section:"", lat:NaN, lon:NaN };
       }
       if(dropRoad(meta)) return;
-      if(meta.dir) dirs[meta.dir] = true;
-      if(meta.road) roads[meta.road] = true;
 
-      if(S.mode !== "fwy" && S.road && meta.road !== S.road) return;
-      if(S.dir && meta.dir && meta.dir !== S.dir) return;
-
-      var lanes = [], vol = 0, heavy = [], total = [];
+      var lanes = [], vol = 0, heavy = [], total = [], types = [];
       (v.LinkFlows || []).forEach(function(lf){
         (lf.Lanes || []).forEach(function(ln){
-          if(ln.LaneType !== undefined && ln.LaneType !== 1) return;
           var s = Number(ln.Speed);
           if(!(s > 0 && s < 200)) return;
           var id = Number(ln.LaneID) || 0;
           lanes[id] = s;
+          if(ln.LaneType !== undefined && ln.LaneType !== null) types.push(Number(ln.LaneType));
           heavy[id] = heavy[id] || 0; total[id] = total[id] || 0;
           (ln.Vehicles || []).forEach(function(x){
             var q = Number(x.Volume);
@@ -494,38 +566,90 @@
       });
       if(!lanes.filter(function(x){ return x > 0; }).length) return;
 
-      pts.push({
-        id: v.VDID || "", mile: meta.mile, section: meta.section || meta.road || v.VDID,
+      var kind = vdKind(v.VDID, types);
+      if(S.mainOnly && kind === "ramp") return;
+
+      all.push({
+        id: v.VDID || "", kind: kind, mile: meta.mile, dir: meta.dir, road: meta.road,
+        section: meta.section || meta.road || v.VDID,
         lanes: lanes, heavy: heavy, total: total, vol: vol, lat: meta.lat, lon: meta.lon
       });
     });
 
-    buildDirChips(Object.keys(dirs));
+    // 自動判定：先找出你所在的那一處，用它決定道路
+    if(S.geo && S.here && !S.autoLock){
+      all.forEach(function(p){ p.d = (isFinite(p.lat) && isFinite(p.lon)) ? dist(S.here.lat,S.here.lon,p.lat,p.lon) : 9999; });
+      var near = null;
+      all.forEach(function(p){ if(!near || p.d < near.d) near = p; });
+      if(near && near.d < 3 && S.mode !== "fwy" && near.road && near.road !== S.road){
+        S.road = near.road;
+      }
+    }
+
+    // 方向清單只看選定道路上實際有的方向，否則會挑到這條路根本沒有的方向
+    var onRoad = all.filter(function(p){
+      return !(S.mode !== "fwy" && S.road && p.road !== S.road);
+    });
+    var dirs = {};
+    onRoad.forEach(function(p){ if(p.dir) dirs[p.dir] = true; });
+    var dirList = Object.keys(dirs);
+
+    if(S.geo && S.here && !S.autoLock){
+      var code = headingCode(S.heading, dirList);
+      if(code) S.dir = code;
+    }
+    if(S.dir && dirList.length && dirList.indexOf(S.dir) < 0) S.dir = "";   // 這條路沒有這個方向
+
+    buildDirChips(dirList);
     if(S.mode !== "fwy") buildRoadSelect();
+
+    pts = onRoad.filter(function(p){ return !(S.dir && p.dir && p.dir !== S.dir); });
+    if(!pts.length && S.dir){ S.dir = ""; buildDirChips(dirList); pts = onRoad.slice(); }
 
     if(!pts.length){
       $("lanes").innerHTML = "";
       $("hint").innerHTML = "";
       $("verdict").textContent = "這個條件下沒有偵測器回報";
-      $("rows").innerHTML = '<tr><td style="text-align:center;color:var(--dim);padding:22px">換一個方向或道路試試</td></tr>';
+      $("rows").innerHTML = '<tr><td style="text-align:center;color:var(--dim);padding:22px">換一條道路或關掉「只看主線」試試</td></tr>';
       $("thead").innerHTML = "<th>位置</th>";
+      $("cap").textContent = "逐點車速";
       setStat("無資料","stale");
       return;
     }
 
     // 排序：定位優先，其次里程
+    function byMile(a,b){
+      var am = (a.mile === null || a.mile === undefined), bm = (b.mile === null || b.mile === undefined);
+      if(am && bm) return String(a.id).localeCompare(String(b.id));
+      if(am) return 1;   // 沒里程的排最後
+      if(bm) return -1;
+      return S.dir === "N" ? (b.mile - a.mile) : (a.mile - b.mile);
+    }
+    var focusPt = null;
     if(S.geo && S.here){
       pts.forEach(function(p){ p.d = (isFinite(p.lat) && isFinite(p.lon)) ? dist(S.here.lat,S.here.lon,p.lat,p.lon) : 9999; });
       pts.sort(function(a,b){ return a.d - b.d; });
+      pts = pts.slice(0,30);
+      if(pts.length && pts[0].d < 5) focusPt = pts[0];
+      // 只留下你前方的：南向里程遞增、北向遞減。方向沒選就無從判斷，全部保留
+      if(focusPt && focusPt.mile != null && (S.dir === "N" || S.dir === "S")){
+        var fm = focusPt.mile;
+        pts = pts.filter(function(p){
+          if(p === focusPt) return true;
+          if(p.mile === null || p.mile === undefined) return false;
+          return S.dir === "S" ? (p.mile >= fm) : (p.mile <= fm);
+        });
+      }
+      pts.sort(byMile);   // 依行車方向排，第一列就是你所在的位置
       pts = pts.slice(0,15);
+      // 方向不明時無法只留前方，至少把你所在的那一列拉到第一行
+      if(focusPt){
+        var at = pts.indexOf(focusPt);
+        if(at > 0){ pts.splice(at,1); pts.unshift(focusPt); }
+        else if(at < 0){ pts.unshift(focusPt); pts = pts.slice(0,15); }
+      }
     }else{
-      pts.sort(function(a,b){
-        var am = (a.mile === null || a.mile === undefined), bm = (b.mile === null || b.mile === undefined);
-        if(am && bm) return String(a.id).localeCompare(String(b.id));
-        if(am) return 1;   // 沒里程的排最後
-        if(bm) return -1;
-        return S.dir === "N" ? (b.mile - a.mile) : (a.mile - b.mile);
-      });
+      pts.sort(byMile);
     }
 
     // 車道統計
@@ -556,7 +680,7 @@
     var names = laneNames(n);
 
     // 定位模式：主畫面改成顯示「你所在的那一處」，不是整條路的平均
-    var focus = (S.geo && S.here && pts.length && pts[0].d < 5) ? pts[0] : null;
+    var focus = focusPt;
     var vals = focus ? focus.lanes : avg;
 
     var best = -1, bestV = -1;
@@ -614,6 +738,13 @@
       var wh = (focus.mile !== null && focus.mile !== undefined)
              ? focus.mile.toFixed(1) + "K" : (focus.section || shortID(focus.id));
       where = "你在 " + wh + " 附近，最近的偵測器 " + Math.round(focus.d * 1000) + " 公尺";
+      if(!(S.dir === "N" || S.dir === "S")) where += "　方向未定，下方含前後路段";
+      if(S.geo && !S.autoLock){
+        var auto = [];
+        if(S.mode !== "fwy" && S.road) auto.push(S.road);
+        if(S.dir) auto.push(dirLabel(S.dir));
+        if(auto.length) where += "　自動：" + auto.join("／");
+      }
     }
 
     var vd = $("verdict");
@@ -645,14 +776,20 @@
     $("rows").innerHTML = pts.map(function(p){
       var vs = p.lanes.filter(function(x){ return x > 0; });
       var isWorst = Math.min.apply(null, vs) === floor;
-      var head = S.geo && p.d < 9999 ? p.d.toFixed(1) + " km · " + (p.section || shortID(p.id))
-               : (p.mile != null ? p.mile.toFixed(1) + "K" : shortID(p.id) || p.section || "");
+      var where = (p.mile !== null && p.mile !== undefined)
+                ? p.mile.toFixed(1) + "K"
+                : (shortID(p.id) || p.section || "");
+      var head = (S.geo && p.d < 9999) ? p.d.toFixed(1) + " km · " + where : where;
+      if(p === focus) head = '<span class="now">現在</span> ' + head;
+      if(isWorst) head = '<span class="slowest">最慢</span> ' + head;
+      if(!S.mainOnly && p.kind === "ramp") head = '<span class="ramp">匝道</span> ' + head;
       var cells = order.map(function(i){
         var x = p.lanes[i];
         return '<td class="num">' + (x > 0 ? '<span class="' + sClass(x) + '">' + Math.round(x) + '</span>'
                                            : '<span style="color:var(--dim)">–</span>') + '</td>';
       }).join("");
-      return '<tr class="' + (isWorst ? "worst" : "") + '"><td title="' + (p.section || "") + '">' + head + '</td>' +
+      var cls = (p === focus) ? "here" : "";
+      return '<tr class="' + cls.trim() + '"><td title="' + (p.section || "") + '">' + head + '</td>' +
         cells + '<td class="num" style="color:var(--dim)">' + (p.vol || "–") + '</td></tr>';
     }).join("");
 
@@ -728,17 +865,24 @@
     html += dirs.map(function(d){
       return '<button class="chip" data-dir="' + d + '" aria-pressed="' + (S.dir === d) + '">' + dirLabel(d) + '</button>';
     }).join("");
+    html += '<button class="chip" id="chipMain" aria-pressed="' + S.mainOnly + '">只看主線</button>';
     html += '<button class="chip geo" id="chipGeo" aria-pressed="' + S.geo + '">我的位置</button>';
     $("dirChips").innerHTML = html;
 
     Array.prototype.forEach.call($("dirChips").querySelectorAll("[data-dir]"), function(b){
       b.onclick = function(){
         S.dir = b.dataset.dir;
+        S.autoLock = true;              // 手動選過就停止自動判定
         localStorage.setItem(LS+"dir", S.dir);
         load();
       };
     });
     $("chipGeo").onclick = toggleGeo;
+    $("chipMain").onclick = function(){
+      S.mainOnly = !S.mainOnly;
+      localStorage.setItem(LS+"mainOnly", S.mainOnly ? "1" : "0");
+      load(true);
+    };
   }
 
   function toggleGeo(){
@@ -747,7 +891,7 @@
     setStat("定位中…");
     navigator.geolocation.getCurrentPosition(function(pos){
       S.here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-      S.geo = true; load(true);
+      S.geo = true; S.autoLock = false; S.heading = null; load(true);
     }, function(){
       say("拿不到定位。請在瀏覽器允許此網站取用位置，網址也要是 https。");
       setStat("定位失敗","stale");
@@ -790,6 +934,7 @@
   };
   $("selRoad").onchange = function(){
     S.road = this.value;
+    S.autoLock = true;
     localStorage.setItem(LS+"road", S.road);
     load();
   };
