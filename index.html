@@ -59,6 +59,7 @@
     padding:5px 13px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
   .chip[aria-pressed="true"]{border-color:var(--paint);color:var(--paint)}
   .chip.geo[aria-pressed="true"]{border-color:var(--flow);color:var(--flow)}
+  .chip.voice[aria-pressed="true"]{border-color:var(--flow);color:var(--flow)}
 
   /* 車道總覽 */
   .lanes{display:flex;gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;
@@ -222,6 +223,8 @@
     dir: localStorage.getItem(LS+"dir") || "",
     swap: localStorage.getItem(LS+"swap") === "1",
     mainOnly: localStorage.getItem(LS+"mainOnly") !== "0",
+    speak: localStorage.getItem(LS+"speak") === "1",
+    lastSpoke: 0, lastSaid: "",
     geo: false, here: null, heading: null, autoLock: false,
     statics: null, staticsKey: "",
     token: null, tokenExp: 0, timer: null, busy: false, pauseUntil: 0, lastLoad: 0
@@ -245,8 +248,11 @@
     return fetch(AUTH,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:b.toString()})
       .then(function(r){
         if(r.status === 400 || r.status === 401) throw new Error("BADKEY");
-        if(!r.ok) throw new Error("AUTH " + r.status);
-        return r.json();
+        if(r.ok) return r.json();
+        return r.text().then(function(t){
+          var detail = (t || "").replace(/\s+/g," ").slice(0,160);
+          throw new Error("AUTH " + r.status + (detail ? " — " + detail : ""));
+        });
       }).then(function(j){
         S.token = j.access_token;
         S.tokenExp = Date.now() + (j.expires_in || 86400) * 1000;
@@ -469,6 +475,45 @@
     });
   }
 
+  // 全國國道偵測器的座標索引，只取編號與經緯度，快取一週
+  function fwyIndex(){
+    try{
+      var c = JSON.parse(localStorage.getItem(LS+"fwyIdx") || "null");
+      if(c && Date.now() - c.t < 604800000 && c.d && c.d.length) return Promise.resolve(c.d);
+    }catch(e){}
+    var sel = "%24select=VDID%2CPositionLat%2CPositionLon&%24format=JSON";
+    return apiTry(["/VD/Freeway?" + sel, "/VD/Freeway/All?" + sel, "/VD/Freeway?%24format=JSON"])
+      .then(function(j){
+        var out = [];
+        unwrap(j).forEach(function(v){
+          var p = parseFwyID(v.VDID);
+          var la = Number(v.PositionLat), lo = Number(v.PositionLon);
+          if(!p || !isFinite(la) || !isFinite(lo)) return;
+          out.push([p.road, +la.toFixed(4), +lo.toFixed(4)]);
+        });
+        try{ localStorage.setItem(LS+"fwyIdx", JSON.stringify({t:Date.now(), d:out})); }catch(e){}
+        return out;
+      });
+  }
+
+  // 你在哪一條國道：找最近的偵測器，從它的編號反推路線
+  function detectFreeway(){
+    if(!(S.mode === "fwy" && S.geo && S.here && !S.autoLock)) return Promise.resolve();
+    return fwyIndex().then(function(idx){
+      var best = null, bd = 1e9;
+      idx.forEach(function(r){
+        var d = dist(S.here.lat, S.here.lon, r[1], r[2]);
+        if(d < bd){ bd = d; best = r[0]; }
+      });
+      // 離最近的國道偵測器超過 1.5 公里，多半根本不在國道上，不亂換
+      if(best && bd < 1.5 && best !== S.scope){
+        S.scope = best; S.statics = null; S.dir = "";
+        localStorage.setItem(LS+"scope", best);
+        buildScopeSelect();
+      }
+    }).catch(function(){});
+  }
+
   function load(force){
     if(S.busy) return Promise.resolve();
     if(!force && Date.now() < S.pauseUntil){
@@ -478,6 +523,7 @@
     }
     S.busy = true; S.lastLoad = Date.now(); setStat("讀取中…"); say("");
     return refreshHere()
+      .then(detectFreeway)
       .then(loadStatics)
       .then(function(){ return apiTry(livePaths()); })
       .then(function(j){ render(unwrap(j)); })
@@ -505,6 +551,12 @@
       $("cfg").showModal();
     }else if(m === "BADKEY"){
       say("金鑰被拒絕。到設定確認 Client ID 與 Secret 沒有貼錯或多了空白。");
+    }else if(/^AUTH 5/.test(m)){
+      setStat("TDX 認證伺服器異常，30 秒後自動重試","stale");
+      say("TDX 的認證伺服器回報伺服器內部錯誤（" + m.split(" —")[0] + "）。<br>" +
+          "這是對方主機的問題，不是你的金鑰或設定。通常幾分鐘就會恢復，程式會自動重試。");
+      S.token = null;
+      setTimeout(function(){ load(true); }, 30000);
     }else if(m === "RATE"){
       S.pauseUntil = Date.now() + 300000;
       setStat("已暫停自動更新 5 分鐘","stale");
@@ -519,6 +571,56 @@
     }else{
       say("讀取失敗：<code>" + m + "</code>");
     }
+  }
+
+  /* ───────── 語音 ───────── */
+  function say2(text){
+    if(!window.speechSynthesis) return;
+    try{
+      window.speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = "zh-TW"; u.rate = 1.05; u.pitch = 1;
+      window.speechSynthesis.speak(u);
+    }catch(e){}
+  }
+
+  // 只在狀況改變時開口，而且兩次之間至少隔 90 秒
+  function maybeSpeak(pts, focus, order, names, best, spread){
+    if(!S.speak || !focus) return;
+    if(!(S.dir === "N" || S.dir === "S")) return;   // 方向不明就不知道哪邊是前方
+
+    var ahead = pts.slice(1, 4);
+    if(!ahead.length) return;
+
+    var lowest = null;
+    ahead.forEach(function(p){
+      p.lanes.forEach(function(s){
+        if(s > 0 && (lowest === null || s < lowest.s)) lowest = { s:s, at:p };
+      });
+    });
+    if(!lowest) return;
+
+    var t = thresholds();
+    var level = lowest.s >= t[0] ? "flow" : (lowest.s >= t[1] ? "slow" : "jam");
+    var lane = spread >= 5 ? names[order.indexOf(best)] : "";
+    var key = level + "|" + lane;
+
+    var now = Date.now();
+    if(key === S.lastSaid && now - S.lastSpoke < 300000) return;
+    if(now - S.lastSpoke < 90000) return;
+
+    var txt;
+    if(level === "flow"){
+      if(S.lastSaid && S.lastSaid.indexOf("flow") === 0) return;   // 本來就順就不用講
+      txt = "前方順暢";
+    }else{
+      var km = (focus.mile !== null && lowest.at.mile !== null && lowest.at.mile !== undefined)
+             ? Math.abs(lowest.at.mile - focus.mile).toFixed(1) : null;
+      txt = (km ? "前方 " + km + " 公里，" : "前方 ") + "車速掉到 " + Math.round(lowest.s);
+      if(lane) txt += "，建議走" + lane;
+    }
+    S.lastSaid = key; S.lastSpoke = now;
+    say2(txt);
   }
 
   /* ───────── 顯示 ───────── */
@@ -741,7 +843,9 @@
       if(!(S.dir === "N" || S.dir === "S")) where += "　方向未定，下方含前後路段";
       if(S.geo && !S.autoLock){
         var auto = [];
-        if(S.mode !== "fwy" && S.road) auto.push(S.road);
+        if(S.mode === "fwy"){
+          FREEWAYS.forEach(function(f){ if(f[0] === S.scope) auto.push(f[1]); });
+        }else if(S.road){ auto.push(S.road); }
         if(S.dir) auto.push(dirLabel(S.dir));
         if(auto.length) where += "　自動：" + auto.join("／");
       }
@@ -797,6 +901,7 @@
       + (S.usedPath ? " · 來源 " + S.usedPath : "")
       + " · 車流為統計區間內車輛數";
     setStat("更新於 " + new Date().toTimeString().slice(0,8));
+    maybeSpeak(pts, focus, order, names, best, spread);
   }
 
   /* ───────── 選單 ───────── */
@@ -866,6 +971,7 @@
       return '<button class="chip" data-dir="' + d + '" aria-pressed="' + (S.dir === d) + '">' + dirLabel(d) + '</button>';
     }).join("");
     html += '<button class="chip" id="chipMain" aria-pressed="' + S.mainOnly + '">只看主線</button>';
+    html += '<button class="chip voice" id="chipVoice" aria-pressed="' + S.speak + '">語音</button>';
     html += '<button class="chip geo" id="chipGeo" aria-pressed="' + S.geo + '">我的位置</button>';
     $("dirChips").innerHTML = html;
 
@@ -878,6 +984,15 @@
       };
     });
     $("chipGeo").onclick = toggleGeo;
+    $("chipVoice").onclick = function(){
+      if(!window.speechSynthesis){ say("這個瀏覽器不支援語音播報。"); return; }
+      S.speak = !S.speak;
+      localStorage.setItem(LS+"speak", S.speak ? "1" : "0");
+      S.lastSpoke = 0; S.lastSaid = "";
+      this.setAttribute("aria-pressed", S.speak);
+      // 這一下是使用者手勢，iOS 需要它才會解鎖語音
+      say2(S.speak ? "語音提示已開啟" : "語音提示已關閉");
+    };
     $("chipMain").onclick = function(){
       S.mainOnly = !S.mainOnly;
       localStorage.setItem(LS+"mainOnly", S.mainOnly ? "1" : "0");
@@ -924,6 +1039,7 @@
 
   $("selScope").onchange = function(){
     S.scope = this.value; S.road = ""; S.dir = ""; S.statics = null;
+    S.autoLock = true;
     localStorage.setItem(LS+"scope", S.scope);
     localStorage.setItem(LS+"road", "");
     $("qRoad").value = "";
